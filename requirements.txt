@@ -1,5 +1,15 @@
 dash
 dash-core-components
 dash-html-components
+matplotlib
+openai
 plotly
 numpy
+pandas
+praw
+python-dotenv
+scipy
+seaborn
+sly
+streamlit
+TA-Lib
