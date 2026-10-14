@@ -86,7 +86,7 @@ class Agente:
 
         # **Componentes BDI**
         self.beliefs: Dict[str, List[str]] = {}
-        self.beliefs["asserts"] = beliefs
+        self.beliefs["asserts"] = list(beliefs)
         self.beliefs["rules"] = []
         self.desires = []
         self.intentions = []
@@ -215,15 +215,39 @@ class Agente:
         # Obtener datos actuales de la criptomoneda
         precio = float(crypto.price)
         volumen = float(crypto.volume)
-        sentimiento = 1 #self.get_sentiment(cripto_name, market_context.sentiment_history)
+        price_ratio = precio / crypto.initial_price if crypto.initial_price else 1.0
+        if price_ratio < 0.95:
+            precio_categoria = 'bajo'
+        elif price_ratio > 1.05:
+            precio_categoria = 'alto'
+        else:
+            precio_categoria = 'medio'
+
+        if crypto.last_sentiment < -0.2:
+            sentimiento = 'negativo'
+        elif crypto.last_sentiment > 0.2:
+            sentimiento = 'positivo'
+        else:
+            sentimiento = 'neutro'
+
+        capital_ratio = self.capital / self.capital_inicial if self.capital_inicial else 0
+        if capital_ratio < 0.33:
+            capital_categoria = 'bajo'
+        elif capital_ratio < 0.66:
+            capital_categoria = 'medio'
+        else:
+            capital_categoria = 'alto'
+
         tendencia_precio = 'alticista' #self.get_tendencia_precio(cripto_name, market_context)
         rsi = 80 # self.get_rsi(cripto_name, market_context)
 
         # Construir el contexto completo
         context = {
-            "precio": precio,
+            "precio": precio_categoria,
             "volumen": volumen,
             "sentimiento": sentimiento,
+            "capital": capital_categoria,
+            "price_history": crypto.price_history,
             "tendencia_precio_alcista": 1 if tendencia_precio == 'alcista' else 0,
             "tendencia_precio_bajista": 1 if tendencia_precio == 'bajista' else 0,
             "tendencia_precio_estable": 1 if tendencia_precio == 'estable' else 0,
@@ -493,9 +517,9 @@ class Agente:
             accion, cripto, cantidad_info = intention
 
             if cantidad_info[0] == 'accion_capital' and cantidad_info[1] == 'CAPITAL':
-                cantidad = 'CAPITAL'
+                cantidad = float(cantidad_info[2]) if len(cantidad_info) > 2 else 'CAPITAL'
             elif cantidad_info[0] == 'accion_cantidad' and cantidad_info[1] == 'TODO':
-                cantidad = 'TODO'
+                cantidad = float(cantidad_info[2]) if len(cantidad_info) > 2 else 'TODO'
             else:
                 # Asumiendo que cualquier otro formato es un porcentaje numérico
                 try:
@@ -547,7 +571,9 @@ class Agente:
         print(self.beliefs["rules"])
         self.options(market_context)
         self.filter_desires()
+        self.historial_intenciones.append((self.ciclo, list(self.intentions)))
         self.execute_intention(market_context )#, sentiment_history)
+        self.ciclo += 1
 
     def get_sentiment(self, crypto_name: str, sentiment_history: Dict[str, List[float]]) -> float:
         """

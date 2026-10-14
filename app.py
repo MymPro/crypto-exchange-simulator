@@ -12,6 +12,8 @@ from scipy.stats import pearsonr
 from llm import *
 import plotly.express as px
 import seaborn as sns
+from copy import deepcopy
+from pathlib import Path
 
 # Configurar el estilo de los gráficos
 sns.set(style="whitegrid")
@@ -41,6 +43,33 @@ def load_rules_from_file(file_path):
     except FileNotFoundError:
         st.error(f"Archivo de reglas no encontrado: {file_path}")
         return []
+
+
+def load_inference_rules(*file_paths):
+    """Carga y adapta las reglas de dominio al parser del motor BDI."""
+    rules = []
+    for file_path in file_paths:
+        path = Path(file_path)
+        if not path.is_file():
+            raise FileNotFoundError(f"Archivo de reglas no encontrado: {file_path}")
+
+        for line in path.read_text(encoding='utf-8').splitlines():
+            line = line.strip()
+            if line:
+                line = line.replace(' TIENES LA ESTRATEGIA: ', ' ENTONCES ')
+                if ' ENTONCES ERES ' in line:
+                    condition, resulting_beliefs = line.split(' ENTONCES ERES ', 1)
+                    resulting_beliefs = resulting_beliefs.replace(' Y ', ', ').replace(' O ', ', ')
+                    line = f'{condition} ENTONCES ERES {resulting_beliefs}'
+                rules.append(line)
+
+    lexer = RuleLexer()
+    parser = RuleParser()
+    parsed_rules = parser.parse(lexer.tokenize('\n'.join(rules)))
+    if not parsed_rules:
+        raise ValueError("No se pudieron interpretar las reglas del motor BDI")
+
+    return FuzzyInferenceEngine(create_graph_from_parser(parsed_rules))
 
 # Título de la aplicación
 st.title("Simulación de Mercado de Criptomonedas")
@@ -94,47 +123,50 @@ if 'data_loaded' not in st.session_state or not st.session_state['data_loaded']:
             "Cardano": 0.03,
         }
 
-        # Crear instancia de Map y obtener pertenencia_map
-        map_obj = Map()
-        pertenencia_map = map_obj.pertenencia_map
-
-        # Crear instancia del ParserReglas
-        parser_reglas = ParserReglas(pertenencia_map=pertenencia_map)
-
-        # Definir criptomonedas predefinidas
-        criptos = []
-        for nombre in pertenencia_map.keys():
-            precio_inicial = initial_prices.get(nombre, 1000.0)
-            volatilidad = initial_volatilities.get(nombre, 0.05)
-            criptos.append(Cryptocurrency(name=nombre, initial_price=precio_inicial, initial_volatility=volatilidad))
-
         # Crear instancia del Mercado
         market = Market(initial_prices, initial_volatilities)
 
-        # Cargar reglas desde archivos de texto
-        rules_buy_low_sell_high = load_rules_from_file('rules/rules_buy_low_sell_high.txt')
-        rules_sentiment = load_rules_from_file('rules/rules_sentiment.txt')
-        rules_inversor = load_rules_from_file('rules/rules_inversor.txt')
+        # Construir el motor BDI con los archivos que existen en el proyecto.
+        inference_engine = load_inference_rules(
+            'Rules/rules_belief.txt',
+            'Rules/rules_strategy.txt',
+        )
+        interpreter = RuleInterpreter()
 
-        # Crear agentes según las estrategias seleccionadas
+        # Cada agente recibe su propio motor para no compartir estado mutable.
         brokers = [
-            Agente('Estrategia Guiado Por Sentimiento del Mercado', rules_sentiment, parser_reglas),
-            Agente('Estrategia Comprar Bajo y Vender Alto', rules_buy_low_sell_high, parser_reglas),
-            Agente('Estrategia Inversor', rules_inversor, parser_reglas),
+            Agente(
+                'Estrategia Guiado Por Sentimiento del Mercado',
+                ['avanzado', 'analista', 'noticias'],
+                inference_engine=deepcopy(inference_engine),
+                interpreter=interpreter,
+            ),
+            Agente(
+                'Estrategia Comprar Bajo y Vender Alto',
+                ['novato', 'terco'],
+                inference_engine=deepcopy(inference_engine),
+                interpreter=interpreter,
+            ),
+            Agente(
+                'Estrategia Inversor',
+                ['experto', 'inversor'],
+                inference_engine=deepcopy(inference_engine),
+                interpreter=interpreter,
+            ),
         ]
 
-        # Crear instancia de SentimentAnalyzer y CryptoTradingAgent
-        trainer = SentimentAnalyzer('.env')
-        reddit_instance = CryptoTradingAgent('.env')
+        available_beliefs = [
+            node.id for node in inference_engine.nodes if isinstance(node, Belief)
+        ]
 
         # Crear instancia de la Simulación
         simulation = Simulation(
             num_steps=num_simulations,
             agents=brokers,
             market=market,
-            parser=parser_reglas,
-            sentiment_analyzer=trainer,
-            reddit_instance=reddit_instance
+            inference_engine=inference_engine,
+            interpreter=interpreter,
+            available_beliefs=available_beliefs,
         )
 
         # Ejecutar la simulación
@@ -198,7 +230,7 @@ if 'data_loaded' in st.session_state and st.session_state['data_loaded']:
         decreasing_line_color='red'
     )])
     fig.update_layout(title=f"Evolución de los Precios de {crypto_to_plot}", xaxis_title='Tiempo de la Simulación', yaxis_title='Precio ($)')
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width='stretch')
 
     # Gráfico de Sentimientos del Mercado
     st.write("### Historial de Sentimiento del Mercado")
@@ -258,7 +290,7 @@ if 'data_loaded' in st.session_state and st.session_state['data_loaded']:
     )
 
     # Mostrar el gráfico en Streamlit
-    st.plotly_chart(fig2, use_container_width=True)
+    st.plotly_chart(fig2, width='stretch')
 
     st.markdown(f"""
     **Este gráfico de barras muestra cómo varió el sentimiento del mercado para {crypto_to_plot} durante la simulación. Un sentimiento positivo indica una percepción favorable (verde), mientras que uno negativo refleja una percepción desfavorable (rojo). El color gris indica un sentimiento neutral. La línea negra punteada en 0 sirve como referencia neutral.**
@@ -273,13 +305,17 @@ if 'data_loaded' in st.session_state and st.session_state['data_loaded']:
         st.warning("No hay rendimientos positivos para mostrar en el gráfico de pastel.")
     else:
         # Obtener las reglas de cada agente
-        reglas_agentes = {agente.nombre: agente.reglas for agente in st.session_state['agentes'] if agente.nombre in rendimiento_total.index}
+        reglas_agentes = {
+            agente.nombre: agente.beliefs.get('rules', [])
+            for agente in st.session_state['agentes']
+            if agente.nombre in rendimiento_total.index
+        }
 
         # Crear hover text con las reglas
         hover_text = []
         for agente in rendimiento_total.index:
             reglas = reglas_agentes.get(agente, ["No hay reglas disponibles"])
-            reglas_formateadas = '<br>'.join(reglas)
+            reglas_formateadas = '<br>'.join(map(str, reglas))
             hover_text.append(f"{agente}<br><br><b>Reglas:</b><br>{reglas_formateadas}")
 
         # Crear el gráfico de pastel
@@ -299,7 +335,7 @@ if 'data_loaded' in st.session_state and st.session_state['data_loaded']:
         )
 
         # Mostrar el gráfico en Streamlit
-        st.plotly_chart(fig_pastel, use_container_width=True)
+        st.plotly_chart(fig_pastel, width='stretch')
 
         st.markdown("""
         **Este gráfico de pastel muestra la distribución del rendimiento total de los agentes. Al pasar el cursor sobre cada sección, se muestran las reglas que cada agente utilizó en su estrategia de trading.**
@@ -335,7 +371,7 @@ if 'data_loaded' in st.session_state and st.session_state['data_loaded']:
     )
 
     # Mostrar el gráfico en Streamlit
-    st.plotly_chart(fig3, use_container_width=True)
+    st.plotly_chart(fig3, width='stretch')
 
     st.markdown("""
     **Este gráfico muestra el rendimiento acumulado de cada agente a lo largo de la simulación. Las líneas representan el crecimiento o decrecimiento de las estrategias de trading de cada agente, permitiendo una comparación visual de su efectividad.**

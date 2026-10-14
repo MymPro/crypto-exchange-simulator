@@ -1,4 +1,5 @@
 from collections import deque
+from collections.abc import Mapping
 import random
 
 # Operadores lógicos difusos
@@ -80,20 +81,17 @@ def create_graph_from_parser(parser_result):
 
     def parse_condition(condition):
         print(condition)
-        if condition != None:
-            if condition[0] == "AND" or condition[0] == "OR" or condition[0] == "NO" or condition[0] == "creencia":
-                if len(condition) == 3:
-                    left = parse_condition(condition[1])
-                    #print(f"OP: {condition[1]}")
-                    rigth = parse_condition(condition[2])
-                    return left + rigth
-                elif len(condition) == 2:
-                    if condition[0] == "NO":
-                        #print(f"OP: {condition[0]}")
-                        return parse_condition(condition[1])
-                    else:
-                        #print(condition[1])
-                        return [condition[1]]
+        if not isinstance(condition, tuple):
+            return []
+        if condition[0] == "creencia":
+            return [condition[1]]
+        if condition[0] == "NO":
+            return parse_condition(condition[1])
+        if len(condition) == 3:
+            # Las comparaciones también pueden contener creencias. Las variables
+            # financieras no crean nodos y simplemente aportan una lista vacía.
+            return parse_condition(condition[1]) + parse_condition(condition[2])
+        return []
                 
 
     def handle_Belief(beliefs):
@@ -180,9 +178,12 @@ def create_graph_from_parser(parser_result):
     for node in nodes:
         #print(node.id)
         belief_list = parse_condition(node.condition)
-        if belief_list != None:
-            for bel in belief_list:
-                node.AddEdge(find_belief_node(bel),None)
+        for bel in belief_list:
+            belief_node = find_belief_node(bel)
+            if belief_node is None:
+                belief_node = Belief(bel, None)
+                nodes.append(belief_node)
+            node.AddEdge(belief_node, None)
 
 
     return nodes
@@ -203,15 +204,27 @@ class FuzzyInferenceEngine:
         else:
             return 0.1 if high_confidence else 0.3  # Grado de certeza bajo para False
 
-    def set_beliefs(self, beliefs_dict):
-        """Establecer los valores iniciales de las creencias con lógica difusa."""
-        self.initialbeliefs = list( beliefs_dict)
+    def set_beliefs(self, beliefs):
+        """Establecer las creencias activas con lógica difusa.
+
+        Los agentes almacenan sus creencias como una lista de nombres, mientras
+        que algunos consumidores antiguos usan un diccionario nombre/booleano.
+        Aceptar ambos formatos evita indexar una lista con una cadena.
+        """
+        self.initialbeliefs = list(beliefs)
+        self.beliefs.clear()
+        self.generated_new_rules.clear()
+
         for node in self.nodes:
             if isinstance(node, Belief):  # Solo procesa nodos que son creencias
                 belief_id = node.id  # El ID de la creencia
-                if belief_id in beliefs_dict:
-                    # Convierte True/False a difuso y lo asigna a self.beliefs
-                    fuzzy_value = self.boolean_to_fuzzy(beliefs_dict[belief_id], True)
+                if isinstance(beliefs, Mapping):
+                    is_active = bool(beliefs.get(belief_id, False))
+                else:
+                    is_active = belief_id in beliefs
+
+                if is_active:
+                    fuzzy_value = self.boolean_to_fuzzy(True, True)
                     self.beliefs[belief_id] = fuzzy_value
                     print(f"Creencia en agente \"{belief_id}\" asignada con valor difuso: {fuzzy_value}")
                 else:
@@ -224,7 +237,7 @@ class FuzzyInferenceEngine:
         beliefs = [] 
 
         for belief in self.beliefs:
-            if self.beliefs[belief] >= 0.3:
+            if self.beliefs[belief] > 0.5:
                 beliefs.append(belief)
         return beliefs
 
@@ -253,7 +266,7 @@ class FuzzyInferenceEngine:
         """Evaluar un nodo de tipo ByRule."""
         condition_value = self.evaluate_condition(node.conditions)
 
-        if condition_value > 0:
+        if condition_value > 0.5:
 
             # Si la condición es verdadera (en términos difusos)
             for rule in node.rules:
@@ -287,7 +300,7 @@ class FuzzyInferenceEngine:
             # Si existe una nueva regla en rule[2], la generamos
             if len(rule) > 2:
                 print(f"Generando nuevas reglas en nodo: {node_id}")
-                new_rules = self.generate_new_rules(action_value)
+                new_rules = [rule]
                 # Agregar la nueva regla al nodo actual
                 for new_rule in new_rules:
                     if new_rule not in self.generated_new_rules:
@@ -403,4 +416,3 @@ class FuzzyInferenceEngine:
                 for rule in node.rules:
                     formatted_rule = self.format_rule(rule)
                     print(f"Regla generada: {formatted_rule}")
-

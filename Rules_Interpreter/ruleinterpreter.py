@@ -16,7 +16,18 @@ class RuleInterpreter():
             elif tipo == "AND":
                 return min(self.evaluate(node[1], context), self.evaluate(node[2], context))
             elif tipo == "OR":
-                return max(self.evaluate(node[1], context) or self.evaluate(node[2], context))
+                return max(self.evaluate(node[1], context), self.evaluate(node[2], context))
+
+            elif tipo == "grafico":
+                history = context.get("price_history", [])
+                if len(history) < 2:
+                    return 0.0
+                lookback = max(1, int(node[1]))
+                initial_index = max(0, len(history) - lookback - 1)
+                initial_price = history[initial_index]
+                if initial_price == 0:
+                    return 0.0
+                return (history[-1] - initial_price) / initial_price * 100
 
             elif tipo == "*":
                 return self.evaluate(node[1], context) * self.evaluate(node[2], context)
@@ -50,13 +61,10 @@ class RuleInterpreter():
                     print(f"Creencia {creencia_name} no encontrada.")
                     return None
             elif tipo == "variable":
-                # Evaluamos una variable específica dentro de beliefs
+                # Las categorías (alto, positivo, etc.) se representan por su
+                # propio texto cuando no son una variable presente en contexto.
                 var_name = node[1]
-                if var_name in context:
-                    return context[var_name]
-                else:
-                    print(f"Variable {var_name} no encontrada.")
-                    return None
+                return context.get(var_name, var_name)
 
             else:
                 print(f"Tipo desconocido: {tipo}")

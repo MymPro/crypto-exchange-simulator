@@ -10,18 +10,34 @@ from Rules_Interpreter.ruleparser import RuleParser
 from Induction_Motor.Motor import *
 from Rules_Interpreter.ruleinterpreter import RuleInterpreter
 import random
+from copy import deepcopy
+
+
+def _append_row(dataframe: pd.DataFrame, row: Dict) -> pd.DataFrame:
+    """Añade una fila sin depender del método privado eliminado en Pandas 3."""
+    return pd.concat([dataframe, pd.DataFrame([row])], ignore_index=True)
+
 
 class Simulation:
-    def __init__(self, num_steps: int, agents: List[Agente], market: Market, parser, motor,interpreter, reddit_instance,map):
+    def __init__(
+        self,
+        num_steps: int,
+        agents: List[Agente],
+        market: Market,
+        inference_engine,
+        interpreter,
+        available_beliefs,
+        sentiment_analyzer=None,
+        reddit_instance=None,
+    ):
         self.num_steps = num_steps
         self.agents = agents
         self.market = market
-        self.parser = parser
         self.sentiment_analyzer = sentiment_analyzer
         self.reddit_instance = reddit_instance
-        self.motor =  motor
-        self.inter =  interpreter
-        self.map = map
+        self.inference_engine = inference_engine
+        self.interpreter = interpreter
+        self.available_beliefs = list(available_beliefs)
         # Diccionarios para almacenar historiales
         self.price_history = {crypto: [market.cryptocurrencies[crypto].price] for crypto in market.cryptocurrencies}
         self.volume_history = {crypto: [] for crypto in market.cryptocurrencies}
@@ -48,7 +64,7 @@ class Simulation:
             initial_row[f'{crypto}_low'] = market.cryptocurrencies[crypto].price
             initial_row[f'{crypto}_close'] = market.cryptocurrencies[crypto].price
             initial_row[f'{crypto}_volume'] = market.cryptocurrencies[crypto].volume
-        self.price_history_df = self.price_history_df._append(initial_row, ignore_index=True)
+        self.price_history_df = _append_row(self.price_history_df, initial_row)
 
         # 2. Historial de Sentimientos
         self.sentiment_history_df = pd.DataFrame(columns=['Time'] +
@@ -59,7 +75,7 @@ class Simulation:
         initial_agent_row = {'Time': 0}
         for agent in agents:
             initial_agent_row[agent.nombre] = 0.0  # Suponemos que la ganancia inicial es 0
-        self.agent_performances_df = self.agent_performances_df._append(initial_agent_row, ignore_index=True)
+        self.agent_performances_df = _append_row(self.agent_performances_df, initial_agent_row)
 
     def run(self):
         agent_gen = 1
@@ -118,7 +134,7 @@ class Simulation:
                 sentiment = self.precomputed_sentiments[crypto][step - 1]
                 self.sentiment_history[crypto].append(sentiment)
                 sentiment_row[f'{crypto}_sentiment'] = sentiment
-            self.sentiment_history_df = self.sentiment_history_df._append(sentiment_row, ignore_index=True)
+            self.sentiment_history_df = _append_row(self.sentiment_history_df, sentiment_row)
 
             # Actualizar el estado del mercado con los sentimientos actuales
             self.market.update(self.sentiment_history)
@@ -127,10 +143,10 @@ class Simulation:
             agent_performance_row = {'Time': step}
             for agent in self.agents:
                 # El agente realiza su ciclo BDI completo
-                agent.action(self.market, self.sentiment_history)
+                agent.action(self.market)
 
                 # Actualizar el rendimiento del agente
-                # agent.actualizar_ganancia(self.market)
+                agent.actualizar_ganancia(self.market)
                 ganancia_actual = agent.historia_ganancia[-1]
                 self.agent_performances[agent.nombre].append(ganancia_actual)
 
@@ -138,25 +154,28 @@ class Simulation:
                 agent_performance_row[agent.nombre] = ganancia_actual
 
             # Añadir la fila de rendimiento de los agentes al DataFrame
-            self.agent_performances_df = self.agent_performances_df._append(agent_performance_row, ignore_index=True)
+            self.agent_performances_df = _append_row(self.agent_performances_df, agent_performance_row)
 
             # Algoritmo Genético cada 10 pasos
             if count == 10:
                 count = 1
-                nuevos, peores = self.algoritmo_genetico(self.market, self.agents,creencias,self.motor,self.inter)
-                # Registrar datos para análisis posterior
-                for agente in nuevos:
-                    print(agente.nombre)
-                    print(agente.reglas)
+                nuevos, peores = self.algoritmo_genetico(
+                    self.market,
+                    self.agents,
+                    self.available_beliefs,
+                    self.inference_engine,
+                    self.interpreter,
+                )
 
                 for agente in peores:
                     self.agents.remove(agente)
 
                 for agente in nuevos:
                     nuevo_nombre = f'agente {No_Agente} generación {agent_gen}'
-                    nuevo_agente = Agente(nuevo_nombre, agente.reglas, self.parser)# ver 
-                    self.agents.append(nuevo_agente)
-                    self.agent_performances[nuevo_nombre] = []  # Inicializar lista de rendimiento
+                    agente.nombre = nuevo_nombre
+                    self.agents.append(agente)
+                    # Alinear el nuevo agente con los pasos anteriores a su creación.
+                    self.agent_performances[nuevo_nombre] = [np.nan] * step
                     # Añadir columna con NaN para todos los pasos anteriores
                     self.agent_performances_df[nuevo_nombre] = [np.nan] * len(self.agent_performances_df)
                     No_Agente += 1
@@ -174,7 +193,8 @@ class Simulation:
 
     def mutar_regla(self, agcreencias:list,creencias):
         sobrantes = [elemento for elemento in creencias if elemento not in agcreencias]
-        agcreencias.append(random.choice(sobrantes))
+        if sobrantes:
+            agcreencias.append(random.choice(sobrantes))
         return agcreencias
     # def mutar_regla(self, regla,creencias):
     #     # Separar la regla en 'SI', condiciones, 'ENTONCES', acción
@@ -264,7 +284,10 @@ class Simulation:
             peor_agente = desempeno_agentes[-1][0]  # Agente con peor desempeño
 
             # Realizar crossover y mutación entre los dos agentes
-            nuevas_reglas_padre1, nuevas_reglas_padre2 = self.crossover(mejor_agente.reglas, peor_agente.reglas)
+            nuevas_reglas_padre1, nuevas_reglas_padre2 = self.crossover(
+                mejor_agente.beliefs["asserts"],
+                peor_agente.beliefs["asserts"],
+            )
 
             # Aplicar mutación a las reglas con una probabilidad definida
             if random.random() < tasa_mutacion:
@@ -276,7 +299,7 @@ class Simulation:
             nuevo_agente = Agente(
                 f'agente {peor_agente.nombre}',
                 nuevas_reglas_padre2,
-                inference_engine ,
+                deepcopy(inference_engine),
                 interpreter,
                 capital_inicial=peor_agente.capital_inicial  # Mantener el capital inicial
             )
@@ -298,7 +321,10 @@ class Simulation:
                 padre1, padre2 = padres[0][0], padres[1][0]
 
                 # Realizar crossover (cruce) entre las reglas de los padres
-                nuevas_reglas_padre1, nuevas_reglas_padre2 = self.crossover(padre1.reglas, padre2.reglas)
+                nuevas_reglas_padre1, nuevas_reglas_padre2 = self.crossover(
+                    padre1.beliefs["asserts"],
+                    padre2.beliefs["asserts"],
+                )
 
                 # Mutar reglas con probabilidad de tasa_mutacion
                 if random.random() < tasa_mutacion:
@@ -310,7 +336,7 @@ class Simulation:
                 nuevo_agente1 = Agente(
                     f'agente {len(nuevos_agentes)}',
                     nuevas_reglas_padre1,
-                    inference_engine ,
+                    deepcopy(inference_engine),
                     interpreter,
                     capital_inicial=padre1.capital_inicial  # Mantener el capital inicial
                 )
@@ -320,7 +346,7 @@ class Simulation:
                 nuevo_agente2 = Agente(
                     f'agente {len(nuevos_agentes)}',
                     nuevas_reglas_padre2,
-                    inference_engine ,
+                    deepcopy(inference_engine),
                     interpreter,
                     capital_inicial=padre2.capital_inicial  # Mantener el capital inicial
                 )
@@ -355,7 +381,7 @@ class Simulation:
             self.volume_history[crypto_name].append(crypto.volume)
 
         # Añadir la fila al DataFrame de precios
-        self.price_history_df = self.price_history_df._append(row_data, ignore_index=True)
+        self.price_history_df = _append_row(self.price_history_df, row_data)
 
     def plot_results(self):
         fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 18))
@@ -413,7 +439,7 @@ class Simulation:
                     'max_performance': (max(agent.historia_ganancia)) / initial_value * 100,
                     'min_performance': (min(agent.historia_ganancia)) / initial_value * 100,
                     'avg_performance': (sum(agent.historia_ganancia) / len(agent.historia_ganancia)) / initial_value * 100,
-                    'rules': agent.reglas,
+                    'rules': agent.beliefs.get('rules', []),
                     'beliefs': agent.beliefs,
                     'intentions': agent.historial_intenciones,
                     'desires': agent.desires,
@@ -490,4 +516,3 @@ class Simulation:
             #     print(n)
 
             return FuzzyInferenceEngine(nodes)
-
